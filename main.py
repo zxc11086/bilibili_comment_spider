@@ -24,10 +24,13 @@ for id in ids:
         reponse = requests.get(url,headers=headers)
         a = json.loads(reponse.text)
         if pn==1:
-            count = a['data']['page']['count']
-            size = a['data']['page']['size']
-            page = count//size+1
-            print(page)
+            try:
+                count = a['data']['page']['count']
+                size = a['data']['page']['size']
+                page = count//size+1
+                print(page)
+            except:
+                break
         try:
             for b in a['data']['replies']:
                 comment.append(b["content"]["message"])
