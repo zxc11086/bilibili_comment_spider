@@ -1,46 +1,85 @@
-import requests
+import argparse
 import json
+import urllib.request
+from pathlib import Path
+from typing import List
+
 import search
 
-
-headers={
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    )
 }
 
-#视频id
-# oid = 'BV1794y1B7n1'
-#评论页数
-# pn = 1
-#排序种类 0是按时间排序 2是按热度排序
-sort = 2
 
-comment = []
-key = input("请输入话题")
-ids = search.search(key)
-for id in ids:
-    pn = 1
+def get_json(url: str, timeout: int = 10) -> dict:
+    req = urllib.request.Request(url=url, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def crawl_video_comments(aid: int, sort: int = 2) -> List[str]:
+    comments: List[str] = []
+    page = 1
+
     while True:
-        url =f'https://api.bilibili.com/x/v2/reply?pn={pn}&type=1&oid={id}&sort={sort}'
-        reponse = requests.get(url,headers=headers)
-        a = json.loads(reponse.text)
-        if pn==1:
-            try:
-                count = a['data']['page']['count']
-                size = a['data']['page']['size']
-                page = count//size+1
-                print(page)
-            except:
-                break
+        url = f"https://api.bilibili.com/x/v2/reply?pn={page}&type=1&oid={aid}&sort={sort}"
         try:
-            for b in a['data']['replies']:
-                comment.append(b["content"]["message"])
-        except:
-            break
-        if pn!=page:
-            pn += 1
-        else:
+            data = get_json(url)
+        except Exception as exc:
+            print(f"[WARN] aid={aid} 第 {page} 页请求失败: {exc}")
             break
 
-    with open(key+".txt", "w", encoding="utf-8") as fp:
-        for c in comment:
-            fp.write(c + "\n")
+        if data.get("code") != 0:
+            print(f"[WARN] aid={aid} 接口返回异常: {data.get('message')}")
+            break
+
+        payload = data.get("data") or {}
+        replies = payload.get("replies") or []
+        for item in replies:
+            msg = (item.get("content") or {}).get("message")
+            if msg:
+                comments.append(msg)
+
+        page_info = payload.get("page") or {}
+        count = page_info.get("count", 0)
+        size = page_info.get("size", 20) or 20
+        total_pages = max(1, (count + size - 1) // size)
+
+        if page >= total_pages:
+            break
+        page += 1
+
+    return comments
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="B站关键词评论爬取")
+    parser.add_argument("--keyword", "-k", help="搜索关键词，不传则交互输入")
+    parser.add_argument("--search-pages", type=int, default=1, help="搜索结果抓取页数")
+    parser.add_argument("--sort", type=int, default=2, choices=[0, 2], help="评论排序: 0时间 2热度")
+    parser.add_argument("--output", "-o", help="输出文件路径，默认<关键词>.txt")
+    args = parser.parse_args()
+
+    keyword = args.keyword or input("请输入话题: ").strip()
+    if not keyword:
+        raise SystemExit("关键词不能为空")
+
+    videos = search.search(keyword, pages=max(1, args.search_pages))
+    print(f"搜索到 {len(videos)} 个视频")
+
+    all_comments: List[str] = []
+    for idx, (aid, bvid) in enumerate(videos, start=1):
+        print(f"[{idx}/{len(videos)}] 抓取 {bvid} (aid={aid})")
+        all_comments.extend(crawl_video_comments(aid=aid, sort=args.sort))
+
+    out_path = Path(args.output or f"{keyword}.txt")
+    out_path.write_text("\n".join(all_comments), encoding="utf-8")
+    print(f"共写入 {len(all_comments)} 条评论 -> {out_path}")
+
+
+if __name__ == "__main__":
+    main()
